@@ -1,0 +1,78 @@
+# Red Team Egress: Only allowed to bayora-ingress on port 8443
+# No egress to Blue, Target internals, host, or internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: red-tenant-traffic-rule
+  namespace: bayora-red
+spec:
+  podSelector:
+    matchLabels:
+      bayora.security/workload: red-runner
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: [] # No incoming traffic permitted into Red runner
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              bayora.security/plane: gateway
+          podSelector:
+            matchLabels:
+              app: bayora-inference-gateway
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+# Blue Team Egress: Only allowed to bayora-ingress on port 8443
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: blue-tenant-traffic-rule
+  namespace: bayora-blue
+spec:
+  podSelector:
+    matchLabels:
+      bayora.security/workload: blue-defender
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: [] # No incoming traffic permitted into Blue defender
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              bayora.security/plane: gateway
+          podSelector:
+            matchLabels:
+              app: bayora-inference-gateway
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+# Target LLM Ingress: ONLY accepted from bayora-ingress
+# Direct ingress from Red or Blue is explicitly forbidden!
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: target-llm-traffic-rule
+  namespace: bayora-target
+spec:
+  podSelector:
+    matchLabels:
+      app: target-llm-vllm
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              bayora.security/plane: gateway
+          podSelector:
+            matchLabels:
+              app: bayora-inference-gateway
+      ports:
+        - protocol: TCP
+          port: 8000

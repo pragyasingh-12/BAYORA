@@ -1,0 +1,68 @@
+[
+  {
+    "id": "evt-001",
+    "timestamp": "2026-10-14 20:00:00 UTC",
+    "evaluationId": "EVAL-2026-4021",
+    "actor": "orchestrator",
+    "action": "EVALUATION_INIT",
+    "targetResource": "bayora-cluster/eval-4021",
+    "canonicalPayload": "{\"mode\":\"adversarial-blindbox\",\"seed\":9412,\"target\":\"Llama-3-70b\"}",
+    "payloadSummary": "Evaluation initialized with seed 9412.",
+    "index": 0,
+    "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "currentHash": "806318b40a415b4ad487a0e1ec64fcd6c95d9b603be46cee66c5b28842c894a9"
+  },
+  {
+    "id": "evt-002",
+    "timestamp": "2026-10-14 20:00:02 UTC",
+    "evaluationId": "EVAL-2026-4021",
+    "actor": "orchestrator",
+    "action": "SANDBOX_ATTACH",
+    "targetResource": "k8s/namespace/bayora-red",
+    "canonicalPayload": "{\"runtime\":\"runsc-gvisor\",\"rootfs\":\"read-only\",\"seccomp\":\"strict\"}",
+    "payloadSummary": "Red Sandbox attached with gVisor runsc and read-only rootfs.",
+    "index": 1,
+    "previousHash": "806318b40a415b4ad487a0e1ec64fcd6c95d9b603be46cee66c5b28842c894a9",
+    "currentHash": "4358a5e65844a15b76b970b66cbddef611c02e16e67034035d14dcd342cf7376"
+  },
+  {
+    "id": "evt-003",
+    "timestamp": "2026-10-14 20:00:05 UTC",
+    "evaluationId": "EVAL-2026-4021",
+    "actor": "bayora-gateway",
+    "action": "POLICY_COMPILED",
+    "targetResource": "networkpolicy/bayora-ingress-only",
+    "canonicalPayload": "{\"ingress\":[\"bayora-ingress:8443\"],\"egress\":\"deny-all\"}",
+    "payloadSummary": "NetworkPolicy compiled: Default-deny with gateway-only ingress.",
+    "index": 2,
+    "previousHash": "4358a5e65844a15b76b970b66cbddef611c02e16e67034035d14dcd342cf7376",
+    "currentHash": "6843ded081c466bf0c7d1c31985e70e9b665a31946346c9fab5bb36c711a8b85"
+  },
+  {
+    "id": "evt-004",
+    "timestamp": "2026-10-14 20:00:10 UTC",
+    "evaluationId": "EVAL-2026-4021",
+    "actor": "bayora-gateway",
+    "action": "INFERENCE_REQUEST",
+    "targetResource": "vllm-openai/Llama-3-70b",
+    "canonicalPayload": "{\"tenant\":\"red\",\"capability\":\"model.inference\",\"cacheSalt\":\"salt_red_a1b2c3d4\"}",
+    "payloadSummary": "Red inference request authorized through Gateway. Cache salt injected.",
+    "index": 3,
+    "previousHash": "6843ded081c466bf0c7d1c31985e70e9b665a31946346c9fab5bb36c711a8b85",
+    "currentHash": "a9fa8d55bf0925752e2993f7e2e84476c978dde12d7285942a8c76e9e8669168"
+  },
+  {
+    "id": "evt-005",
+    "timestamp": "2026-10-14 20:00:15 UTC",
+    "evaluationId": "EVAL-2026-4021",
+    "actor": "orchestrator",
+    "action": "CHECKPOINT_SIGNED",
+    "targetResource": "checkpoint/merkle-root-v1",
+    "canonicalPayload": "{\"signer\":\"bayora-ed25519-key\",\"checkpointBlock\":4}",
+    "payloadSummary": "Periodic audit checkpoint cryptographically signed.",
+    "signature": "ed25519:3fa91c88e0b24d77a831092e44012bc0",
+    "index": 4,
+    "previousHash": "a9fa8d55bf0925752e2993f7e2e84476c978dde12d7285942a8c76e9e8669168",
+    "currentHash": "a0be45f60ecc946bbbe43f26e41960ae603d55857a4b47ef6f53665f911d7ce6"
+  }
+]

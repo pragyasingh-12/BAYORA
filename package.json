@@ -1,6 +1,7 @@
 {
-  "name": "oosc-agent-reliability",
-  "version": "0.1.0",
+  "name": "bayora-ai-safety",
+  "version": "1.0.0",
+  "description": "Bayora: Confidential Multi-Tenant Adversarial AI Safety Testing Infrastructure",
   "private": true,
   "packageManager": "pnpm@10.15.0",
   "scripts": {

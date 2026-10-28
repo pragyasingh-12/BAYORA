@@ -14,6 +14,7 @@ import {
   traceController,
   copilotController,
 } from "./controllers";
+import { bayoraController } from "./controllers/bayora-controller";
 
 export function createApp() {
   const app = Fastify({
@@ -28,6 +29,7 @@ export function createApp() {
 
   app.register(healthRoutes);
 
+  app.register(bayoraController);
   app.register(agentController);
   app.register(scenarioController);
   app.register(testRunController);

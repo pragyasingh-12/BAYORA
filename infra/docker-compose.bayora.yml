@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # 1. Bayora Web Console
+  bayora-web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    container_name: bayora-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+    networks:
+      - bayora_mgmt_net
+    restart: unless-stopped
+
+  # 2. Bayora Fastify API + Orchestrator
+  bayora-api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: bayora-api
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - VLLM_API_URL=http://target-llm:8000
+    networks:
+      - bayora_mgmt_net
+      - bayora_gateway_net
+    volumes:
+      - bayora_audit_volume:/app/.bayora
+    restart: unless-stopped
+
+  # 3. Policy & Inference Gateway
+  inference-gateway:
+    image: node:20-alpine
+    container_name: bayora-inference-gateway
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+    networks:
+      - bayora_red_net
+      - bayora_blue_net
+      - bayora_gateway_net
+    restart: unless-stopped
+
+  # 4. Target LLM Runtime (Isolated network - only accessible via Gateway)
+  target-llm:
+    image: vllm/vllm-openai:latest
+    container_name: bayora-target-llm
+    read_only: true
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8192M
+    networks:
+      - bayora_gateway_net
+    restart: unless-stopped
+
+  # 5. Red Team Sandbox (Isolated network - cannot reach Blue or Target directly)
+  red-sandbox:
+    image: alpine:latest
+    container_name: bayora-red-sandbox
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    networks:
+      - bayora_red_net
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+  # 6. Blue Team Sandbox (Isolated network - cannot reach Red or Target directly)
+  blue-sandbox:
+    image: alpine:latest
+    container_name: bayora-blue-sandbox
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    networks:
+      - bayora_blue_net
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+networks:
+  bayora_mgmt_net:
+    driver: bridge
+  bayora_red_net:
+    driver: bridge
+    internal: true # No external or cross-network traffic
+  bayora_blue_net:
+    driver: bridge
+    internal: true
+  bayora_gateway_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  bayora_audit_volume:

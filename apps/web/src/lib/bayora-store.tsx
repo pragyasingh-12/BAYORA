@@ -17,6 +17,7 @@ import {
   ReproducibilityCapsule,
 } from "@/types/bayora";
 import { computeAuditNodeHash, verifyChainIntegrity, sha256 } from "./crypto-audit";
+import { apiClient } from "./api-client";
 
 // Initial seed data
 const INITIAL_SANDBOXES: SandboxNode[] = [
@@ -749,7 +750,19 @@ export function BayoraProvider({ children }: { children: React.ReactNode }) {
     setProbes((prev) =>
       prev.map((p) => (p.id === id ? { ...p, status: "running" } : p))
     );
-    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    try {
+      const liveProbe = await apiClient.post<BoundaryProbe>("/api/bayora/probes/run", { probeId: id });
+      if (liveProbe && liveProbe.id) {
+        setProbes((prev) => prev.map((p) => (p.id === id ? liveProbe : p)));
+        setIsSimulating(false);
+        return;
+      }
+    } catch {
+      // Fallback
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
 
     setProbes((prev) =>
       prev.map((p) =>
@@ -821,6 +834,21 @@ export function BayoraProvider({ children }: { children: React.ReactNode }) {
   };
 
   const simulateGatewayRequest = async (payload: { tenant: "red" | "blue"; capability: any; prompt: string }): Promise<GatewayRequest> => {
+    try {
+      const res = await apiClient.post<GatewayRequest>("/api/bayora/gateway/infer", {
+        evaluationId: activeEvaluationId,
+        tenant: payload.tenant,
+        capability: payload.capability,
+        prompt: payload.prompt,
+      });
+      if (res && res.id) {
+        setGatewayRequests((prev) => [res, ...prev.slice(0, 19)]);
+        return res;
+      }
+    } catch {
+      // Fallback to local logic
+    }
+
     const isRedAdminAttempt = payload.tenant === "red" && payload.capability === "admin.reset";
     const status: GatewayRequest["status"] = isRedAdminAttempt ? "DENIED" : "ALLOWED";
     const reason = isRedAdminAttempt
@@ -850,7 +878,7 @@ export function BayoraProvider({ children }: { children: React.ReactNode }) {
   const runSideChannelBenchmark = async (mode: "baseline_shared" | "resource_isolated" | "cache_salted_isolated") => {
     setIsSimulating(true);
     setSideChannelMode(mode);
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const newExp = generateSideChannelRun(mode);
     setSideChannelExperiment(newExp);
     setIsSimulating(false);
@@ -858,6 +886,16 @@ export function BayoraProvider({ children }: { children: React.ReactNode }) {
 
   const testSessionCanary = async (cacheSalted: boolean) => {
     setIsSimulating(true);
+    try {
+      const liveCanary = await apiClient.post<{ leaked: boolean; details: string }>("/api/bayora/canary/test", { cacheSalted });
+      if (liveCanary && liveCanary.details) {
+        setIsSimulating(false);
+        setCanaryDetected(liveCanary.leaked);
+        return liveCanary;
+      }
+    } catch {
+      // Fallback
+    }
     await new Promise((resolve) => setTimeout(resolve, 600));
     setIsSimulating(false);
 
@@ -877,6 +915,12 @@ export function BayoraProvider({ children }: { children: React.ReactNode }) {
   };
 
   const verifyAuditChainAction = () => {
+    apiClient
+      .post<{ isValid: boolean; brokenIndex: number | null }>("/api/bayora/audit/verify")
+      .then((res) => {
+        if (res) setAuditVerificationReport(res);
+      })
+      .catch(() => {});
     const report = verifyChainIntegrity(auditEvents);
     setAuditVerificationReport(report);
     return report;

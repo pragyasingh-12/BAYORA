@@ -1,0 +1,49 @@
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    sandbox.gvisor.io/enabled: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bayora-red-runner
+  namespace: bayora-red
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      bayora.security/workload: red-runner
+  template:
+    metadata:
+      labels:
+        bayora.security/workload: red-runner
+    spec:
+      runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: Localhost
+          localhostProfile: bayora-strict-seccomp.json
+      containers:
+        - name: runner
+          image: bayora/red-runner:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            limits:
+              cpu: "2000m"
+              memory: "4096Mi"
+            requests:
+              cpu: "500m"
+              memory: "1024Mi"
