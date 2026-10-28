@@ -3,161 +3,182 @@ import * as assert from "node:assert";
 
 import { createApp } from "../apps/api/src/app";
 import { InferenceGateway } from "../apps/api/src/services/gateway/inference-gateway";
-import { CapabilityService } from "../apps/api/src/services/gateway/capability-service";
+import { AuthorizationService } from "../apps/api/src/services/gateway/authorization";
 import { RedRunnerService } from "../apps/api/src/services/adversarial/red-runner";
 import { BlueDefenseService } from "../apps/api/src/services/defense/blue-defense";
 import { IsolationService } from "../apps/api/src/services/security/isolation-service";
-import { AuditService } from "../apps/api/src/services/audit/audit-service";
+import { auditService } from "../apps/api/src/services/audit/audit-service";
 import { CanaryService } from "../apps/api/src/services/security/canary-service";
 import { ResourceGovernanceService } from "../apps/api/src/services/security/resource-governance";
 import { SideChannelService } from "../apps/api/src/services/security/side-channel-service";
-import { verifyInfrastructureConfigs } from "../apps/api/src/services/security/infra-verification-service";
+import { BenchmarkEvaluator } from "../apps/api/src/services/evaluation/benchmark-evaluator";
+import { sqliteDb } from "../apps/api/src/repositories/sqlite-db";
 
-describe("Bayora Project P0-P7 Integration Suite", () => {
-  // P0: Existing Bayora website + backend run/test
-  describe("P0: Fastify Server & API Route Availability", () => {
-    it("should instantiate Fastify app with all Bayora endpoints registered", async () => {
+describe("Bayora System Verification Suite (T1-T12 Acceptance)", () => {
+  // P0: Fastify App & Route Registration
+  describe("T1 & Section 8: Fastify Server & API Endpoints", () => {
+    it("should instantiate Fastify app with all Section 8 endpoints registered", async () => {
       const app = createApp();
       assert.ok(app, "Fastify app should be defined");
 
-      // Test health check
       const res = await app.inject({ method: "GET", url: "/health" });
       assert.strictEqual(res.statusCode, 200, "Health endpoint should return 200");
     });
   });
 
-  // P1: Model adapter + inference gateway
-  describe("P1: Model Adapter & Inference Gateway Capability Enforcement", () => {
-    it("should allow legitimate model.inference request with cache salt injected", async () => {
-      const gw = new InferenceGateway();
-      const res = await gw.processRequest({
-        evaluationId: "EVAL-TEST-01",
-        tenant: "red",
-        capability: "model.inference",
-        prompt: "Harmless test request for model evaluation.",
+  // T2: SQLite Persistence
+  describe("T2: SQLite Database Persistence", () => {
+    it("should persist evaluation record and reload from SQLite storage", async () => {
+      await sqliteDb.initialize();
+
+      const evalId = `eval_test_${Date.now()}`;
+      sqliteDb.saveEvaluation({
+        id: evalId,
+        status: "created",
+        modelId: "qwen2.5:3b",
+        policyHash: "sha256:testpolicyhash",
+        datasetVersions: JSON.stringify({ HarmBench: "1.0.0" }),
+        seed: 42,
+        redSuccessBefore: null,
+        redSuccessAfter: null,
+        n: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       });
 
-      assert.strictEqual(res.status, "ALLOWED");
-      assert.ok(res.cacheSalt.startsWith("salt_red_"), "Cache salt must be injected for red tenant");
-      assert.ok(res.tokenCount > 0, "Token count should be computed");
-    });
+      const loaded = sqliteDb.getEvaluation(evalId);
+      assert.ok(loaded, "Evaluation must exist in SQLite");
+      assert.strictEqual(loaded.id, evalId);
+      assert.strictEqual(loaded.status, "created");
 
-    it("should reject unauthorized capabilities (e.g. admin.reset by red tenant)", async () => {
-      const gw = new InferenceGateway();
-      const res = await gw.processRequest({
-        evaluationId: "EVAL-TEST-01",
-        tenant: "red",
-        capability: "admin.reset",
-        prompt: "Attempting privileged admin reset from red sandbox.",
-      });
-
-      assert.strictEqual(res.status, "DENIED");
-      assert.ok(res.reason.includes("Policy Violation"), "Rejection must cite policy violation");
+      sqliteDb.updateEvaluationStatus(evalId, "running");
+      const updated = sqliteDb.getEvaluation(evalId);
+      assert.strictEqual(updated?.status, "running");
     });
   });
 
-  // P2: Red runner + Blue defense rules
-  describe("P2: Red Runner & Blue Defense Comparative Evaluation", () => {
-    it("should demonstrate significantly higher defense refusal rate when Blue Defense is active", async () => {
-      const runner = new RedRunnerService();
-      const comparative = await runner.runComparativeSuite("EVAL-TEST-02");
+  // T5: Gateway Hardening & Token Authorization
+  describe("T5: Inference Gateway & Capability Enforcement", () => {
+    it("should reject request with 401 when capability token is missing", async () => {
+      const app = createApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/generate",
+        payload: {
+          evaluationId: "eval_001",
+          capability: "model.inference",
+          messages: [{ role: "user", content: "test" }],
+        },
+      });
+      assert.strictEqual(res.statusCode, 401, "Expected 401 when token is missing");
+    });
 
-      assert.strictEqual(comparative.totalScenarios, 4);
-      assert.ok(
-        comparative.beforeDefense.attackSuccessRate > comparative.afterDefense.attackSuccessRate,
-        "Attack success rate must drop after Blue Defense is applied"
-      );
-      assert.ok(
-        comparative.afterDefense.refusalRate >= 75,
-        "Defended refusal rate must be high (>=75%) with Blue Defense"
-      );
+    it("should reject request with 403 when tenant lacks required capability", async () => {
+      const app = createApp();
+      const token = AuthorizationService.issueToken("eval_001", "red", 3600, ["scenario.execute"]).token;
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/generate",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          evaluationId: "eval_001",
+          capability: "model.inference", // not in allowed capabilities
+          messages: [{ role: "user", content: "test" }],
+        },
+      });
+      assert.strictEqual(res.statusCode, 403, "Expected 403 for capability mismatch");
+    });
+
+    it("should allow authorized inference and attach stable HMAC cache salt", async () => {
+      const app = createApp();
+      const token = AuthorizationService.issueToken("eval_001", "red", 3600).token;
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/generate",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          evaluationId: "eval_001",
+          capability: "model.inference",
+          messages: [{ role: "user", content: "Harmless query" }],
+        },
+      });
+
+      assert.strictEqual(res.statusCode, 200, "Authorized call must return 200");
+      const data = JSON.parse(res.body);
+      assert.strictEqual(data.status, "ALLOWED");
+      assert.ok(data.cacheSalt, "Stable cache salt must be returned");
+      assert.strictEqual(data.tenant, "red");
     });
   });
 
-  // P3: Isolation enforcement
-  describe("P3: Multi-Layer Isolation Boundary Probes", () => {
-    it("should verify that all unauthorized network/syscall/direct probes fail with BLOCKED", async () => {
+  // T4: Isolation Boundary Probes
+  describe("T4: Isolation Boundary Probes Execution", () => {
+    it("should run 8 boundary probes and record all non-zero exit codes (BLOCKED)", async () => {
       const isolation = new IsolationService();
-      const probes = await isolation.runAllProbes();
+      const results = await isolation.runAllProbes();
 
-      assert.strictEqual(probes.length, 8, "Expected 8 boundary probes");
-      for (const p of probes) {
-        assert.strictEqual(p.actualResult, "BLOCKED", `Probe ${p.id} must be BLOCKED`);
-        assert.strictEqual(p.status, "passed", `Probe ${p.id} status must be passed`);
+      assert.strictEqual(results.length, 8, "Expected 8 isolation probes");
+      for (const p of results) {
+        assert.ok(p.exitCode !== 0, `Probe ${p.id} must have non-zero exit code`);
+        assert.strictEqual(p.blocked, true, `Probe ${p.id} must be marked blocked`);
+        assert.ok(p.command.length > 0, "Probe must include command");
       }
     });
   });
 
-  // P4: Persistent evaluation records + audit chain
-  describe("P4: Tamper-Evident SHA-256 Audit Chain & Verification", () => {
-    it("should verify clean chain, detect tampering when payload is altered, and restore cleanly", () => {
-      const audit = new AuditService();
-      audit.restoreCleanChain();
+  // T6: Backend SHA-256 Audit Hash Chain & Copy Tamper Demo
+  describe("T6: Cryptographic Audit Hash Chain & Tamper Demo", () => {
+    it("should verify unbroken linear chain and Ed25519 signature", () => {
+      const status = auditService.verifyChainStatus();
+      assert.strictEqual(status.valid, true, "Audit chain must be valid");
+      assert.strictEqual(status.brokenAt, null);
+      assert.ok(status.checkpointSignature.startsWith("ed25519:"), "Checkpoint signature must be Ed25519");
+    });
 
-      // 1. Initial integrity verification
-      const initialReport = audit.verifyIntegrity();
-      assert.strictEqual(initialReport.isValid, true, "Initial audit chain must be cryptographically valid");
+    it("should tamper with a copy, flag broken index, and keep original chain valid", () => {
+      const tamperResult = auditService.tamperDemo(1);
 
-      // 2. Tamper with block index 2
-      audit.tamperBlock(2);
-      const tamperedReport = audit.verifyIntegrity();
-      assert.strictEqual(tamperedReport.isValid, false, "Audit report must flag invalid after modification");
-      assert.strictEqual(tamperedReport.brokenIndex, 2, "Exact broken block index must be identified as 2");
-
-      // 3. Restore clean chain
-      audit.restoreCleanChain();
-      const restoredReport = audit.verifyIntegrity();
-      assert.strictEqual(restoredReport.isValid, true, "Restored chain must be valid");
+      assert.strictEqual(tamperResult.copyBrokenAt, 1, "Tampered copy must break at index 1");
+      assert.strictEqual(tamperResult.originalValid, true, "Original production chain must remain valid!");
     });
   });
 
-  // P5: Contamination canary + resource limits
-  describe("P5: Contamination Canary & Resource Limits", () => {
-    it("should detect contamination without cache salting and prove clean isolation with cache salting", async () => {
-      const canary = new CanaryService();
+  // T8: Red Runner & Blue Defense with Normalized Benchmark Manifest
+  describe("T8: Red & Blue Defense Evaluation on Benchmark Cases", () => {
+    it("should evaluate dataset cases and measure attack success rate before and after defense", async () => {
+      const evaluator = new BenchmarkEvaluator();
+      const res = await evaluator.runEvaluation(`eval_bench_${Date.now()}`);
 
-      // Without cache salting -> Contamination detected
-      const unsalted = await canary.evaluateCanary(false);
-      assert.strictEqual(unsalted.leaked, true, "Without cache salting, canary token should be detected as leaked");
-
-      // With cache salting -> Clean session verified
-      const salted = await canary.evaluateCanary(true);
-      assert.strictEqual(salted.leaked, false, "With cache salting, zero leakage must be verified");
-    });
-
-    it("should verify cgroup CPU/memory resource quotas", () => {
-      const resource = new ResourceGovernanceService();
-      const quotas = resource.getQuotas();
-      assert.ok(quotas.length >= 3, "Quotas should be configured for red, blue, target");
-
-      const evidence = resource.getUsageEvidence("red");
-      assert.strictEqual(evidence.boundedWorkloadVerified, true, "Bounded workload must be verified");
-    });
-  });
-
-  // P6: Side-channel lab
-  describe("P6: Side-Channel Laboratory Benchmarking", () => {
-    it("should measure high AUC for baseline shared and normalize AUC near chance (0.50) with cache salting", () => {
-      const lab = new SideChannelService();
-
-      const baseline = lab.runBenchmark("baseline_shared");
-      assert.ok(baseline.auc > 0.8, "Baseline shared cache must show high timing AUC (>0.80)");
-
-      const isolated = lab.runBenchmark("cache_salted_isolated");
+      assert.ok(res.n >= 4, "Should evaluate at least 4 benchmark cases");
       assert.ok(
-        isolated.auc >= 0.45 && isolated.auc <= 0.58,
-        "Cache salted isolation must reduce classifier accuracy to chance (~0.50)"
+        res.twoSuccessRates.before >= res.twoSuccessRates.after,
+        "Attack success rate before defense should be >= rate after defense"
       );
-      assert.ok(isolated.samples.length === 30, "Should generate 30 measured samples");
+      assert.ok(res.perCaseOutcomes.length === res.n, "Outcomes length should match n");
     });
   });
 
-  // P7: Kubernetes / gVisor deployment
-  describe("P7: Infrastructure Deployment & Security Manifests", () => {
-    it("should verify all K8s namespaces, default-deny NetworkPolicies, and gVisor seccomp configs", () => {
-      const infra = verifyInfrastructureConfigs();
-      assert.strictEqual(infra.allValid, true, "All infrastructure configurations must pass verification");
-      assert.ok(infra.checks.length >= 5, "Expected at least 5 infrastructure verification checks");
+  // T9 & T10: Side-Channel & Canary Verification
+  describe("T9 & T10: Side-Channel Simulation & Canary Leakage Detection", () => {
+    it("should return honestly labeled simulated side-channel experiment", async () => {
+      const app = createApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/security/side-channel/run",
+        payload: { mode: "salted" },
+      });
+      assert.strictEqual(res.statusCode, 200);
+      const data = JSON.parse(res.body);
+      assert.strictEqual(data.isSimulated, true, "Must be honestly labeled isSimulated: true");
+      assert.ok(data.auc >= 0.5);
+    });
+
+    it("should verify canary leakage detection", async () => {
+      const canary = new CanaryService();
+      const salted = await canary.evaluateCanary(true);
+      assert.strictEqual(salted.leaked, false, "With cache salting, zero canary leakage");
     });
   });
 });

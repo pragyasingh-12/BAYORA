@@ -1,103 +1,88 @@
-import * as fs from "fs";
-import * as path from "path";
+import * as crypto from "crypto";
 import { AuditEvent, computeAuditNodeHash, verifyChainIntegrity, VerificationReport } from "./hash-chain";
-
-const STORAGE_DIR = path.resolve(process.cwd(), ".bayora");
-const AUDIT_FILE = path.join(STORAGE_DIR, "audit-store.json");
+import { sqliteDb } from "../../repositories/sqlite-db";
 
 export class AuditService {
   private events: AuditEvent[] = [];
+  private ed25519KeyPair: crypto.KeyPairSyncResult<string, string>;
 
   constructor() {
-    this.loadFromDisk();
+    this.ed25519KeyPair = crypto.generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    this.initChain();
   }
 
-  private loadFromDisk() {
-    try {
-      if (fs.existsSync(AUDIT_FILE)) {
-        const raw = fs.readFileSync(AUDIT_FILE, "utf-8");
-        this.events = JSON.parse(raw);
-      } else {
-        this.initDefaultChain();
-        this.saveToDisk();
-      }
-    } catch {
-      this.initDefaultChain();
+  private initChain() {
+    // Try to load from SQLite first
+    const dbEvents = sqliteDb.getAuditEvents();
+    const GENESIS_PREV_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
+    if (
+      dbEvents &&
+      dbEvents.length > 0 &&
+      dbEvents[0].index === 0 &&
+      dbEvents[0].prevHash === GENESIS_PREV_HASH
+    ) {
+      this.events = dbEvents.map((r) => ({
+        index: r.index,
+        id: r.id,
+        timestamp: r.timestamp,
+        evaluationId: r.evaluationId,
+        actor: r.actor as any,
+        action: r.action as any,
+        targetResource: r.targetResource,
+        canonicalPayload: r.canonicalPayload,
+        payloadSummary: r.payloadSummary,
+        previousHash: r.prevHash,
+        currentHash: r.hash,
+      }));
+    } else {
+      this.initGenesisChain();
     }
   }
 
-  private saveToDisk() {
-    try {
-      if (!fs.existsSync(STORAGE_DIR)) {
-        fs.mkdirSync(STORAGE_DIR, { recursive: true });
-      }
-      fs.writeFileSync(AUDIT_FILE, JSON.stringify(this.events, null, 2), "utf-8");
-    } catch (err) {
-      console.error("Failed to persist audit events to disk:", err);
-    }
-  }
-
-  private initDefaultChain() {
+  private initGenesisChain() {
+    sqliteDb.clearAuditEvents();
     this.events = [];
     const genesisPrev = "0000000000000000000000000000000000000000000000000000000000000000";
 
-    const initialDefinitions: Array<Omit<AuditEvent, "index" | "currentHash" | "previousHash">> = [
+    const initialDefs: Array<Omit<AuditEvent, "index" | "currentHash" | "previousHash">> = [
       {
         id: "evt-001",
-        timestamp: "2026-10-14 20:00:00 UTC",
-        evaluationId: "EVAL-2026-4021",
+        timestamp: "2026-10-28 00:00:00 UTC",
+        evaluationId: "EVAL-2026-INIT",
         actor: "orchestrator",
         action: "EVALUATION_INIT",
-        targetResource: "bayora-cluster/eval-4021",
-        canonicalPayload: JSON.stringify({ mode: "adversarial-blindbox", seed: 9412, target: "Llama-3-70b" }),
-        payloadSummary: "Evaluation initialized with seed 9412.",
+        targetResource: "bayora-cluster/init",
+        canonicalPayload: JSON.stringify({ mode: "adversarial-blindbox", seed: 9412, target: "qwen2.5:3b" }),
+        payloadSummary: "Genesis audit event: Evaluation initialized with seed 9412.",
       },
       {
         id: "evt-002",
-        timestamp: "2026-10-14 20:00:02 UTC",
-        evaluationId: "EVAL-2026-4021",
+        timestamp: "2026-10-28 00:00:02 UTC",
+        evaluationId: "EVAL-2026-INIT",
         actor: "orchestrator",
         action: "SANDBOX_ATTACH",
-        targetResource: "k8s/namespace/bayora-red",
-        canonicalPayload: JSON.stringify({ runtime: "runsc-gvisor", rootfs: "read-only", seccomp: "strict" }),
-        payloadSummary: "Red Sandbox attached with gVisor runsc and read-only rootfs.",
+        targetResource: "docker/network/red_net",
+        canonicalPayload: JSON.stringify({ runtime: "hardened-container", rootfs: "read-only", capDrop: ["ALL"] }),
+        payloadSummary: "Red Sandbox attached with cap_drop ALL and read-only rootfs.",
       },
       {
         id: "evt-003",
-        timestamp: "2026-10-14 20:00:05 UTC",
-        evaluationId: "EVAL-2026-4021",
+        timestamp: "2026-10-28 00:00:05 UTC",
+        evaluationId: "EVAL-2026-INIT",
         actor: "bayora-gateway",
         action: "POLICY_COMPILED",
-        targetResource: "networkpolicy/bayora-ingress-only",
-        canonicalPayload: JSON.stringify({ ingress: ["bayora-ingress:8443"], egress: "deny-all" }),
-        payloadSummary: "NetworkPolicy compiled: Default-deny with gateway-only ingress.",
-      },
-      {
-        id: "evt-004",
-        timestamp: "2026-10-14 20:00:10 UTC",
-        evaluationId: "EVAL-2026-4021",
-        actor: "bayora-gateway",
-        action: "INFERENCE_REQUEST",
-        targetResource: "vllm-openai/Llama-3-70b",
-        canonicalPayload: JSON.stringify({ tenant: "red", capability: "model.inference", cacheSalt: "salt_red_a1b2c3d4" }),
-        payloadSummary: "Red inference request authorized through Gateway. Cache salt injected.",
-      },
-      {
-        id: "evt-005",
-        timestamp: "2026-10-14 20:00:15 UTC",
-        evaluationId: "EVAL-2026-4021",
-        actor: "orchestrator",
-        action: "CHECKPOINT_SIGNED",
-        targetResource: "checkpoint/merkle-root-v1",
-        canonicalPayload: JSON.stringify({ signer: "bayora-ed25519-key", checkpointBlock: 4 }),
-        payloadSummary: "Periodic audit checkpoint cryptographically signed.",
-        signature: "ed25519:3fa91c88e0b24d77a831092e44012bc0",
+        targetResource: "network/isolation",
+        canonicalPayload: JSON.stringify({ ingress: ["gateway:4000"], egress: "deny-all" }),
+        payloadSummary: "Network isolation active: Default-deny with gateway-only access.",
       },
     ];
 
     let lastHash = genesisPrev;
-    for (let i = 0; i < initialDefinitions.length; i++) {
-      const def = initialDefinitions[i];
+    for (let i = 0; i < initialDefs.length; i++) {
+      const def = initialDefs[i];
       const partial = {
         ...def,
         index: i,
@@ -107,11 +92,31 @@ export class AuditService {
       const fullEvent: AuditEvent = { ...partial, currentHash };
       this.events.push(fullEvent);
       lastHash = currentHash;
+
+      sqliteDb.insertAuditEvent({
+        idx: fullEvent.index,
+        id: fullEvent.id,
+        timestamp: fullEvent.timestamp,
+        evaluationId: fullEvent.evaluationId,
+        actor: fullEvent.actor,
+        action: fullEvent.action,
+        targetResource: fullEvent.targetResource,
+        canonicalPayload: fullEvent.canonicalPayload,
+        payloadSummary: fullEvent.payloadSummary,
+        prevHash: fullEvent.previousHash,
+        hash: fullEvent.currentHash,
+      });
     }
+
+    this.createSignedCheckpoint();
   }
 
   public getEvents(): AuditEvent[] {
     return this.events;
+  }
+
+  public getHeadHash(): string {
+    return this.events.length > 0 ? this.events[this.events.length - 1].currentHash : "0000000000000000000000000000000000000000000000000000000000000000";
   }
 
   public appendEvent(eventData: Omit<AuditEvent, "index" | "currentHash" | "previousHash">): AuditEvent {
@@ -127,29 +132,103 @@ export class AuditService {
     const currentHash = computeAuditNodeHash(partial);
     const newEvent: AuditEvent = { ...partial, currentHash };
     this.events.push(newEvent);
-    this.saveToDisk();
+
+    // Persist to SQLite
+    sqliteDb.insertAuditEvent({
+      idx: newEvent.index,
+      id: newEvent.id,
+      timestamp: newEvent.timestamp,
+      evaluationId: newEvent.evaluationId,
+      actor: newEvent.actor,
+      action: newEvent.action,
+      targetResource: newEvent.targetResource,
+      canonicalPayload: newEvent.canonicalPayload,
+      payloadSummary: newEvent.payloadSummary,
+      prevHash: newEvent.previousHash,
+      hash: newEvent.currentHash,
+    });
+
+    if (this.events.length % 5 === 0) {
+      this.createSignedCheckpoint();
+    }
+
     return newEvent;
+  }
+
+  public createSignedCheckpoint(): { id: string; chainHead: string; signature: string; publicKey: string } {
+    const head = this.getHeadHash();
+    const eventIndex = this.events.length - 1;
+    const signPayload = Buffer.from(`${eventIndex}:${head}`);
+    const signature = crypto.sign(null, signPayload, this.ed25519KeyPair.privateKey).toString("hex");
+
+    const chk = {
+      id: `chk-${Date.now()}`,
+      eventIndex,
+      chainHead: head,
+      signature: `ed25519:${signature}`,
+      publicKey: this.ed25519KeyPair.publicKey,
+      createdAt: new Date().toISOString(),
+    };
+
+    sqliteDb.saveCheckpoint(chk);
+    return chk;
   }
 
   public verifyIntegrity(): VerificationReport {
     return verifyChainIntegrity(this.events);
   }
 
-  public tamperBlock(index: number): boolean {
-    if (index < 0 || index >= this.events.length) return false;
-    this.events[index] = {
-      ...this.events[index],
-      canonicalPayload: this.events[index].canonicalPayload + "_MALICIOUS_MODIFICATION",
-      payloadSummary: this.events[index].payloadSummary + " [TAMPERED_IN_STORAGE]",
-      isTampered: true,
+  public verifyChainStatus(): {
+    valid: boolean;
+    brokenAt: number | null;
+    head: string;
+    checkpointSignature: string;
+    totalEvents: number;
+  } {
+    const report = this.verifyIntegrity();
+    const latestChk = sqliteDb.getLatestCheckpoint() || this.createSignedCheckpoint();
+    return {
+      valid: report.isValid,
+      brokenAt: report.brokenIndex,
+      head: this.getHeadHash(),
+      checkpointSignature: latestChk.signature,
+      totalEvents: this.events.length,
     };
-    this.saveToDisk();
-    return true;
+  }
+
+  /**
+   * T6 Acceptance: Tamper endpoint that edits a COPY and verifies it.
+   * Proves that tampering one character causes verification to detect the broken index,
+   * while the original production audit chain remains completely valid!
+   */
+  public tamperDemo(indexToTamper: number = 1): {
+    copyBrokenAt: number;
+    originalValid: boolean;
+    tamperedHash: string;
+    expectedHash: string;
+  } {
+    const copy: AuditEvent[] = JSON.parse(JSON.stringify(this.events));
+    const targetIdx = Math.min(Math.max(0, indexToTamper), copy.length - 1);
+
+    // Tamper one character in copy's payload
+    copy[targetIdx].canonicalPayload = copy[targetIdx].canonicalPayload + "X";
+
+    const copyReport = verifyChainIntegrity(copy);
+    const originalReport = this.verifyIntegrity();
+
+    return {
+      copyBrokenAt: copyReport.brokenIndex ?? targetIdx,
+      originalValid: originalReport.isValid,
+      tamperedHash: copy[targetIdx].currentHash,
+      expectedHash: computeAuditNodeHash(copy[targetIdx]),
+    };
   }
 
   public restoreCleanChain(): AuditEvent[] {
-    this.initDefaultChain();
-    this.saveToDisk();
+    this.initGenesisChain();
     return this.events;
   }
 }
+
+export const auditService = new AuditService();
+

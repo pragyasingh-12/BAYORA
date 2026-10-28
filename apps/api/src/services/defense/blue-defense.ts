@@ -134,4 +134,43 @@ export class BlueDefenseService {
       sanitizedPrompt: prompt,
     };
   }
+
+  public evaluateOutput(content: string, defenseEnabled: boolean = true): DefenseEvaluationResult {
+    if (!defenseEnabled) {
+      return {
+        blocked: false,
+        action: "ALLOW",
+        triggeredRuleIds: [],
+        reason: "Output defense disabled.",
+        sanitizedPrompt: content,
+      };
+    }
+
+    const triggeredRules: string[] = [];
+    const canaryRule = this.rules.get("rule-canary-protection");
+    if (canaryRule && canaryRule.enabled) {
+      if (/CANARY_RED_[A-Za-z0-9]+|CANARY_BLUE_[A-Za-z0-9]+/i.test(content)) {
+        triggeredRules.push(canaryRule.id);
+      }
+    }
+
+    if (triggeredRules.length > 0) {
+      return {
+        blocked: true,
+        action: "BLOCK",
+        triggeredRuleIds: triggeredRules,
+        reason: `Output guardrail triggered: Canary leakage detected.`,
+        sanitizedPrompt: "[FILTERED_BY_OUTPUT_GUARDRAIL]",
+      };
+    }
+
+    return {
+      blocked: false,
+      action: "ALLOW",
+      triggeredRuleIds: [],
+      reason: "Output passed guardrails.",
+      sanitizedPrompt: content,
+    };
+  }
 }
+

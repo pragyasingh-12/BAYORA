@@ -723,6 +723,34 @@ export function BayoraProvider({ children }: { children: React.ReactNode }) {
   const [canaryDetected, setCanaryDetected] = useState<boolean>(false);
   const [auditVerificationReport, setAuditVerificationReport] = useState<{ isValid: boolean; brokenIndex: number | null }>({ isValid: true, brokenIndex: null });
 
+  useEffect(() => {
+    async function syncWithLiveApi() {
+      try {
+        const liveProbes = await apiClient.get<any[]>("/api/v1/security/probes");
+        if (liveProbes && Array.isArray(liveProbes) && liveProbes.length > 0) {
+          setProbes((prev) =>
+            prev.map((p) => {
+              const match = liveProbes.find((lp: any) => lp.id === p.id);
+              if (match) {
+                return {
+                  ...p,
+                  actualResult: match.blocked ? "BLOCKED" : "ALLOWED",
+                  status: match.blocked ? "passed" : "failed",
+                  outputLog: match.outputLog || p.outputLog,
+                  timestamp: match.ts || p.timestamp,
+                };
+              }
+              return p;
+            })
+          );
+        }
+      } catch {
+        // API offline fallback
+      }
+    }
+    syncWithLiveApi();
+  }, []);
+
   // Run all isolation probes with realistic deterministic sequence
   const runAllProbes = async () => {
     setIsSimulating(true);

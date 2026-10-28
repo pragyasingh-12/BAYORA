@@ -1,45 +1,127 @@
 version: "3.8"
 
+networks:
+  gateway_edge:
+    driver: bridge
+  red_net:
+    driver: bridge
+    internal: true
+  blue_net:
+    driver: bridge
+    internal: true
+  target_net:
+    driver: bridge
+    internal: true
+
 services:
-  api:
-    image: node:20-alpine
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: sh -c "corepack enable && pnpm install && pnpm --filter @oosc/api dev"
+  # Central Ingress Gateway & Control Plane
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: bayora-gateway
+    networks:
+      - gateway_edge
+      - red_net
+      - blue_net
+      - target_net
     ports:
       - "4000:4000"
     environment:
       - PORT=4000
       - HOST=0.0.0.0
       - CORS_ORIGIN=http://localhost:3000
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_EVALUATION_MODEL=${OPENAI_EVALUATION_MODEL:-gpt-4o-mini}
+      - TARGET_LLM_PROVIDER=${TARGET_LLM_PROVIDER:-mock}
+      - TARGET_LLM_ENDPOINT=http://target:11434
+      - TARGET_LLM_MODEL=${TARGET_LLM_MODEL:-qwen2.5:3b}
+      - BAYORA_TOKEN_SECRET=${BAYORA_TOKEN_SECRET:-bayora_secure_secret_token_2026}
+      - BAYORA_ADMIN_KEY=${BAYORA_ADMIN_KEY:-sk_bayora_admin_key}
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: false # SQLite data storage
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 150
+    mem_limit: 2048m
+    cpus: 2.0
     restart: unless-stopped
 
-  web:
+  # Red Team Sandbox: isolated inside red_net only
+  red:
     image: node:20-alpine
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: sh -c "corepack enable && pnpm install && pnpm --filter @oosc/web dev"
+    container_name: bayora-red-sandbox
+    networks:
+      - red_net
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 50
+    mem_limit: 1024m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    command: ["sh", "-c", "echo 'Red sandbox initialized in isolated network'; sleep infinity"]
+    restart: unless-stopped
+
+  # Blue Team Sandbox: isolated inside blue_net only
+  blue:
+    image: node:20-alpine
+    container_name: bayora-blue-sandbox
+    networks:
+      - blue_net
+    user: "10002:10002"
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 50
+    mem_limit: 1024m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    command: ["sh", "-c", "echo 'Blue defender initialized in isolated network'; sleep infinity"]
+    restart: unless-stopped
+
+  # Target Model: reachable exclusively from gateway on target_net
+  target:
+    image: node:20-alpine
+    container_name: bayora-target-model
+    networks:
+      - target_net
+    user: "10003:10003"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 4096m
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    command: ["sh", "-c", "echo 'Target LLM service listening on target_net only'; sleep infinity"]
+    restart: unless-stopped
+
+  # Web Dashboard
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: bayora-web
+    networks:
+      - gateway_edge
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:4000
     depends_on:
-      - api
-    restart: unless-stopped
-
-  mock-agent:
-    image: node:20-alpine
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: node mock-agent.js
-    ports:
-      - "5000:5000"
-    environment:
-      - MOCK_AGENT_PORT=5000
-      - MOCK_AGENT_HOST=0.0.0.0
+      - gateway
     restart: unless-stopped

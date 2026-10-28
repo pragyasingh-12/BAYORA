@@ -43,3 +43,5 @@ coverage/
 .vercel
 .env*
 !.env.example
+.bayora/
+*.sqlite
